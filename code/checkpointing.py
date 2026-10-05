@@ -6,9 +6,30 @@ import json
 import os
 import shutil
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 import torch
+
+
+_PROFILE_STATE_NAMES = {"total_ops", "total_params"}
+
+
+def clean_model_state_dict(state_dict):
+    """Return a state dict without temporary buffers installed by profilers such as THOP."""
+    cleaned = OrderedDict(
+        (key, value)
+        for key, value in state_dict.items()
+        if key.rsplit(".", 1)[-1] not in _PROFILE_STATE_NAMES
+    )
+    if hasattr(state_dict, "_metadata"):
+        cleaned._metadata = state_dict._metadata
+    return cleaned
+
+
+def load_model_state_dict(model, state_dict, strict: bool = True):
+    """Load model weights while accepting checkpoints polluted by profiling helpers."""
+    return model.load_state_dict(clean_model_state_dict(state_dict), strict=strict)
 
 
 def sha256_file(path: str | Path, block_size: int = 1024 * 1024) -> str:

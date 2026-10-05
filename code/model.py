@@ -1,6 +1,7 @@
 """Model construction, freezing, optimizer groups, and complexity estimates."""
 from __future__ import annotations
 
+import copy
 from typing import Iterable
 
 import torch
@@ -127,12 +128,14 @@ def count_gmacs(model: nn.Module, img_size: int = 224) -> float:
     except ImportError as exc:
         raise ImportError("Cần cài thop để đếm GMAC: pip install thop") from exc
 
-    parameter = next(model.parameters(), None)
+    # THOP temporarily registers ``total_ops``/``total_params`` buffers on modules.
+    # Profile a disposable copy so those implementation details can never leak into
+    # a training checkpoint. ``no_grad`` also avoids creating inference tensors that
+    # later reject in-place updates during ``load_state_dict``.
+    profiled_model = copy.deepcopy(model).eval()
+    parameter = next(profiled_model.parameters(), None)
     original_device = parameter.device if parameter is not None else torch.device("cpu")
-    was_training = model.training
-    model.eval()
     dummy = torch.zeros(1, 3, img_size, img_size, device=original_device)
-    with torch.inference_mode():
-        macs, _ = profile(model, inputs=(dummy,), verbose=False)
-    model.train(was_training)
+    with torch.no_grad():
+        macs, _ = profile(profiled_model, inputs=(dummy,), verbose=False)
     return float(macs / 1_000_000_000.0)

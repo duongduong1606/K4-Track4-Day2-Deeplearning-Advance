@@ -281,11 +281,12 @@ def _checkpoint(model, optimizer, scheduler, scaler, ema, cfg, epoch, best_f1,
         "best_epoch": best_epoch,
         "history": history,
         "config": asdict(cfg),
-        "model_state_dict": model.state_dict(),
+        "model_state_dict": checkpointing.clean_model_state_dict(model.state_dict()),
         "optimizer_state_dict": optimizer.state_dict(),
         "scheduler_state_dict": scheduler.state_dict(),
         "scaler_state_dict": scaler.state_dict(),
-        "ema_state_dict": ema.state_dict() if ema is not None else None,
+        "ema_state_dict": (checkpointing.clean_model_state_dict(ema.state_dict())
+                           if ema is not None else None),
         "rng_state": _capture_rng_state(),
         "loader_generator_state": loader_generator_state,
     }
@@ -432,12 +433,12 @@ def run(cfg: Config) -> dict:
                         f"Checkpoint không khớp Config tại {key}: "
                         f"{previous_cfg.get(key)!r} != {getattr(cfg, key)!r}"
                     )
-            network.load_state_dict(resume_state["model_state_dict"])
+            checkpointing.load_model_state_dict(network, resume_state["model_state_dict"])
             optimizer.load_state_dict(resume_state["optimizer_state_dict"])
             scheduler.load_state_dict(resume_state["scheduler_state_dict"])
             scaler.load_state_dict(resume_state["scaler_state_dict"])
             if ema is not None and resume_state.get("ema_state_dict") is not None:
-                ema.module.load_state_dict(resume_state["ema_state_dict"])
+                checkpointing.load_model_state_dict(ema.module, resume_state["ema_state_dict"])
             start_epoch = int(resume_state["epoch"])
             if start_epoch > cfg.epochs:
                 raise ValueError(f"Checkpoint epoch {start_epoch} vượt cfg.epochs={cfg.epochs}")
@@ -523,7 +524,7 @@ def run(cfg: Config) -> dict:
 
     checkpoint = _torch_load(best_path, device)
     evaluation_state = checkpoint.get("ema_state_dict") or checkpoint["model_state_dict"]
-    network.load_state_dict(evaluation_state)
+    checkpointing.load_model_state_dict(network, evaluation_state)
     val_names, y_val, val_logits, val_loss = evaluate(network, val_loader, criterion, device)
     val_probs = _softmax(val_logits)
     val_metrics = compute_metrics(y_val, val_probs.argmax(1), val_probs)

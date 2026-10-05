@@ -78,7 +78,7 @@ def _load_run(run_root: str | Path, device: str):
     )
     checkpoint = checkpointing.torch_load(run_root / "best.pt", map_location="cpu")
     state = checkpoint.get("ema_state_dict") or checkpoint["model_state_dict"]
-    network.load_state_dict(state)
+    checkpointing.load_model_state_dict(network, state)
     device_obj = torch.device(device if device != "cuda" or torch.cuda.is_available() else "cpu")
     network.to(device_obj).eval()
     return config, network, device_obj

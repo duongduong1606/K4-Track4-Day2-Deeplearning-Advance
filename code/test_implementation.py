@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import unittest
 import tempfile
+import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -12,7 +15,7 @@ import torch.nn.functional as F
 from torch import nn
 
 try:
-    from . import benchmark, checkpointing, colab_automation, dataset, final_inference, inference, losses, train
+    from . import benchmark, checkpointing, colab_automation, dataset, final_inference, inference, losses, model, train
 except ImportError:
     import benchmark
     import checkpointing
@@ -21,6 +24,7 @@ except ImportError:
     import final_inference
     import inference
     import losses
+    import model
     import train
 
 
@@ -121,6 +125,26 @@ class TestHelpers(unittest.TestCase):
             restored = checkpointing.torch_load(mirror)
             self.assertEqual(restored["epoch"], 3)
             torch.testing.assert_close(restored["tensor"], torch.arange(4))
+
+    def test_profile_helpers_are_removed_from_old_checkpoints(self):
+        network = nn.Sequential(nn.Linear(3, 2))
+        polluted = network.state_dict()
+        polluted["total_ops"] = torch.tensor([1.0])
+        polluted["0.total_params"] = torch.tensor([8.0])
+        result = checkpointing.load_model_state_dict(network, polluted)
+        self.assertEqual(result.missing_keys, [])
+        self.assertEqual(result.unexpected_keys, [])
+
+    def test_gmac_profile_does_not_mutate_training_model(self):
+        network = nn.Sequential(nn.Conv2d(3, 4, 1))
+
+        def fake_profile(profiled_model, inputs, verbose):
+            profiled_model.register_buffer("total_ops", torch.tensor([123.0]))
+            return 2_000_000_000, 0
+
+        with mock.patch.dict(sys.modules, {"thop": SimpleNamespace(profile=fake_profile)}):
+            self.assertEqual(model.count_gmacs(network, 8), 2.0)
+        self.assertNotIn("total_ops", network.state_dict())
 
     def test_manifests_keep_test_locked(self):
         with tempfile.TemporaryDirectory() as directory:
