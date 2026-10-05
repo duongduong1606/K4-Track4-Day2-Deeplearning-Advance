@@ -24,6 +24,7 @@ except ImportError:
 
 
 IMAGES_MD5 = "b7b30f96d466fba86016aa5a26606e0f"
+IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 
 
 def _now() -> str:
@@ -53,6 +54,27 @@ def md5_file(path: str | Path, block_size: int = 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def _detect_images_dir(local_data: Path) -> Path:
+    """Accept archives containing either images/* or flat image files."""
+    nested = local_data / "images"
+    if nested.is_dir() and any(
+        path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES for path in nested.iterdir()
+    ):
+        return nested
+    if local_data.is_dir() and any(
+        path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES for path in local_data.iterdir()
+    ):
+        return local_data
+    return nested
+
+
+def _count_images(images_dir: Path) -> int:
+    return sum(
+        1 for path in images_dir.iterdir()
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES
+    )
+
+
 def stage_dataset(drive_root: str | Path, local_root: str | Path,
                   verify_md5: bool = True) -> dict:
     """Copy one archive plus labels from Drive and extract images on local Colab disk."""
@@ -64,7 +86,7 @@ def stage_dataset(drive_root: str | Path, local_root: str | Path,
     local_data = local_root / "data"
     local_zip = local_data / "images.zip"
     local_labels = local_data / "labels"
-    images_dir = local_data / "images"
+    images_dir = _detect_images_dir(local_data)
     if not source_zip.is_file():
         raise FileNotFoundError(f"Thiếu {source_zip}")
     local_data.mkdir(parents=True, exist_ok=True)
@@ -82,29 +104,38 @@ def stage_dataset(drive_root: str | Path, local_root: str | Path,
             raise FileNotFoundError(f"Thiếu {source}")
         checkpointing.atomic_copy(source, local_labels / name)
 
-    marker = images_dir / ".extracted_ok"
+    marker = local_data / ".extracted_ok"
     if not marker.exists():
-        if images_dir.exists():
+        if images_dir == local_data / "images" and images_dir.exists():
             shutil.rmtree(images_dir)
-        with zipfile.ZipFile(local_zip) as archive:
-            extraction_root = local_data.resolve()
-            for member in archive.infolist():
-                destination = (local_data / member.filename).resolve()
-                try:
-                    destination.relative_to(extraction_root)
-                except ValueError as exc:
-                    raise ValueError(f"ZIP chứa đường dẫn không an toàn: {member.filename}") from exc
-            archive.extractall(local_data)
-        if not images_dir.is_dir():
+        # A failed older run may already have extracted a valid flat archive.
+        images_dir = _detect_images_dir(local_data)
+        image_count = _count_images(images_dir) if images_dir.is_dir() else 0
+        if image_count != 17_509:
+            with zipfile.ZipFile(local_zip) as archive:
+                extraction_root = local_data.resolve()
+                for member in archive.infolist():
+                    destination = (local_data / member.filename).resolve()
+                    try:
+                        destination.relative_to(extraction_root)
+                    except ValueError as exc:
+                        raise ValueError(f"ZIP chứa đường dẫn không an toàn: {member.filename}") from exc
+                archive.extractall(local_data)
+            images_dir = _detect_images_dir(local_data)
+            image_count = _count_images(images_dir) if images_dir.is_dir() else 0
+        if not images_dir.is_dir() or image_count == 0:
             raise FileNotFoundError(
-                f"Sau giải nén không có {images_dir}; kiểm tra cấu trúc bên trong images.zip"
+                "Sau giải nén không tìm thấy ảnh trong data/images hoặc data/"
             )
-        image_count = sum(1 for path in images_dir.iterdir() if path.is_file() and not path.name.startswith("."))
         if image_count != 17_509:
             raise ValueError(f"Số ảnh sau giải nén là {image_count}, phải là 17.509")
-        marker.write_text(json.dumps({"md5": checksum, "images": image_count}), encoding="utf-8")
+        marker.write_text(json.dumps({
+            "md5": checksum, "images": image_count,
+            "layout": "nested" if images_dir.name == "images" else "flat",
+        }), encoding="utf-8")
     else:
-        image_count = sum(1 for path in images_dir.iterdir() if path.is_file() and not path.name.startswith("."))
+        images_dir = _detect_images_dir(local_data)
+        image_count = _count_images(images_dir)
 
     return {
         "images_dir": str(images_dir),

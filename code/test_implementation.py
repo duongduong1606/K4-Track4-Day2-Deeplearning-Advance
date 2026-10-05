@@ -83,6 +83,15 @@ class TestInference(unittest.TestCase):
 
 
 class TestHelpers(unittest.TestCase):
+    def test_detect_images_dir_supports_nested_and_flat_archives(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "sample.jpg").touch()
+            self.assertEqual(colab_automation._detect_images_dir(root), root)
+            (root / "images").mkdir()
+            (root / "images" / "nested.jpg").touch()
+            self.assertEqual(colab_automation._detect_images_dir(root), root / "images")
+
     def test_overrides(self):
         parsed = train.parse_overrides(["seed=123", "amp=false", "ema_decay=0.999", "mix=none"])
         self.assertEqual(parsed, {"seed": 123, "amp": False, "ema_decay": 0.999, "mix": None})
