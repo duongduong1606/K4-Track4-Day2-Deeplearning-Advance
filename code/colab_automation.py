@@ -13,10 +13,12 @@ from pathlib import Path
 
 try:
     from . import checkpointing
+    from . import final_inference
     from .experiment_plan import BACKBONES, FINAL_SEEDS, TRAINING
     from .train import Config, persistent_pred_path, persistent_run_dir, run
 except ImportError:
     import checkpointing
+    import final_inference
     from experiment_plan import BACKBONES, FINAL_SEEDS, TRAINING
     from train import Config, persistent_pred_path, persistent_run_dir, run
 
@@ -29,11 +31,16 @@ def _now() -> str:
 
 
 def _plan_hash(runs: list[dict]) -> str:
-    frozen = [
-        {"run_id": item["run_id"], "config": item["config"],
-         "max_attempts": item.get("max_attempts", 3)}
-        for item in runs
-    ]
+    frozen = []
+    for item in runs:
+        entry = {
+            "run_id": item["run_id"], "config": item["config"],
+            "max_attempts": item.get("max_attempts", 3),
+        }
+        for key in ("exp_id", "seed", "spec_path"):
+            if key in item:
+                entry[key] = item[key]
+        frozen.append(entry)
     payload = json.dumps(frozen, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -140,28 +147,79 @@ def create_screening_manifest(path: str | Path, overwrite: bool = False) -> Path
     return checkpointing.atomic_json_dump(manifest, destination)
 
 
-def create_final_manifest(path: str | Path, best_config: Config, baseline_config: Config | None = None,
-                          overwrite: bool = False) -> Path:
-    """Create a LOCKED three-seed baseline/final queue selected from validation."""
+def create_final_training_manifest(path: str | Path, best_config: Config,
+                                   selection_note: str,
+                                   baseline_config: Config | None = None,
+                                   overwrite: bool = False) -> Path:
+    """Create a test-free three-seed queue after the recipe is frozen on validation."""
+    if not selection_note.strip():
+        raise ValueError("Phải ghi lý do chọn cấu hình từ validation")
     destination = Path(path)
     if destination.exists() and not overwrite:
-        raise FileExistsError(f"Final manifest đã tồn tại: {destination}")
+        return destination
     baseline_config = baseline_config or Config(exp_id="T00")
     configs = []
     for seed in FINAL_SEEDS:
-        configs.append(Config(**{**asdict(baseline_config), "exp_id": "T00", "seed": seed}))
-        configs.append(Config(**{**asdict(best_config), "exp_id": "F01", "seed": seed}))
+        configs.append(Config(**{**asdict(baseline_config), "exp_id": "T00", "seed": seed,
+                                 "save_test_predictions": False}))
+        configs.append(Config(**{**asdict(best_config), "exp_id": "F01", "seed": seed,
+                                 "save_test_predictions": False}))
     manifest = {
         "version": 1,
-        "kind": "final",
-        "test_access": True,
-        "locked": True,
+        "kind": "final_training",
+        "test_access": False,
+        "locked": False,
         "selection_source": "validation_only",
-        "selection_note": "",
+        "selection_note": selection_note.strip(),
         "created_at": _now(),
         "runs": [_manifest_item(cfg) for cfg in configs],
     }
+    manifest["plan_sha256"] = _plan_hash(manifest["runs"])
     return checkpointing.atomic_json_dump(manifest, destination)
+
+
+def create_final_test_manifest(path: str | Path, drive_root: str | Path,
+                               final_spec_path: str | Path,
+                               overwrite: bool = False) -> Path:
+    """Create a locked one-time test queue using a frozen validation-selected spec."""
+    destination, drive_root = Path(path), Path(drive_root)
+    if destination.exists() and not overwrite:
+        raise FileExistsError(f"Test manifest đã tồn tại: {destination}")
+    final_inference.load_frozen_spec(final_spec_path)
+    baseline_spec_path = drive_root / "queue" / "baseline_I00_spec.json"
+    baseline_spec = final_inference.InferenceSpec(name="I00")
+    checkpointing.atomic_json_dump({
+        "spec": asdict(baseline_spec),
+        "spec_sha256": final_inference.spec_hash(baseline_spec),
+        "selected_from": "protocol_baseline",
+        "selection_note": "T00 bắt buộc dùng inference I00 làm mốc",
+    }, baseline_spec_path)
+    runs = []
+    for seed in FINAL_SEEDS:
+        runs.extend([
+            {"run_id": f"T00_seed{seed}_test", "exp_id": "T00", "seed": seed,
+             "spec_path": str(baseline_spec_path), "status": "pending", "attempts": 0,
+             "max_attempts": 3, "config": {"exp_id": "T00", "seed": seed}},
+            {"run_id": f"F01_seed{seed}_test", "exp_id": "F01", "seed": seed,
+             "spec_path": str(final_spec_path), "status": "pending", "attempts": 0,
+             "max_attempts": 3, "config": {"exp_id": "F01", "seed": seed}},
+        ])
+    manifest = {
+        "version": 1, "kind": "final_test", "test_access": True, "locked": True,
+        "selection_source": "validation_only", "selection_note": "", "created_at": _now(),
+        "runs": runs,
+    }
+    return checkpointing.atomic_json_dump(manifest, destination)
+
+
+def create_final_manifest(path: str | Path, best_config: Config, baseline_config: Config | None = None,
+                          overwrite: bool = False) -> Path:
+    """Deprecated unsafe combined flow; final training and test must remain separate."""
+    del path, best_config, baseline_config, overwrite
+    raise RuntimeError(
+        "Dùng create_final_training_manifest(), sau đó create_final_test_manifest(). "
+        "Không tạo manifest vừa train vừa test."
+    )
 
 
 def unlock_final_manifest(path: str | Path, selection_note: str) -> None:
@@ -170,7 +228,7 @@ def unlock_final_manifest(path: str | Path, selection_note: str) -> None:
         raise ValueError("Phải ghi selection_note giải thích lựa chọn dựa trên validation")
     manifest_path = Path(path)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("kind") != "final" or not manifest.get("test_access"):
+    if manifest.get("kind") != "final_test" or not manifest.get("test_access"):
         raise ValueError("Chỉ final manifest mới được mở khóa test")
     manifest["selection_note"] = selection_note.strip()
     manifest["locked"] = False
@@ -211,6 +269,8 @@ def run_queue(manifest_path: str | Path, drive_root: str | Path, local_root: str
         raise PermissionError("Screening manifest không được phép truy cập test")
     if test_access and manifest.get("plan_sha256") != _plan_hash(manifest["runs"]):
         raise PermissionError("Cấu hình final manifest đã thay đổi sau khi mở khóa")
+    if manifest.get("kind") == "final_training" and manifest.get("plan_sha256") != _plan_hash(manifest["runs"]):
+        raise PermissionError("Cấu hình final training đã thay đổi sau khi chốt trên validation")
 
     data = stage_dataset(drive_root, local_root)
     local_work = local_root / "work"
@@ -281,3 +341,72 @@ def run_queue(manifest_path: str | Path, drive_root: str | Path, local_root: str
                 raise
         checkpointing.atomic_json_dump(manifest, manifest_path)
     return results
+
+
+def run_final_test_queue(manifest_path: str | Path, drive_root: str | Path,
+                         local_root: str | Path, max_runs: int = 1,
+                         allow_test: bool = False, stop_on_error: bool = True) -> list[dict]:
+    """Apply frozen inference specs to test exactly once per completed seeded model."""
+    manifest_path, drive_root, local_root = Path(manifest_path), Path(drive_root), Path(local_root)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("kind") != "final_test" or not manifest.get("test_access"):
+        raise PermissionError("Manifest không phải final_test")
+    if manifest.get("locked", True) or not allow_test:
+        raise PermissionError("Final test vẫn khóa hoặc allow_test chưa được bật")
+    if manifest.get("plan_sha256") != _plan_hash(manifest["runs"]):
+        raise PermissionError("Final test plan đã bị thay đổi sau khi mở khóa")
+
+    staged = stage_dataset(drive_root, local_root)
+    persistent_pred_dir = drive_root / "artifacts" / "predictions"
+    local_pred_dir = local_root / "work" / "predictions"
+    completed_now, executed = [], 0
+    for item in manifest["runs"]:
+        if executed >= max_runs:
+            break
+        final_prediction = persistent_pred_dir / f"{item['exp_id']}_seed{item['seed']}_test.csv"
+        if final_prediction.exists():
+            item["status"] = "completed"
+            item["prediction"] = str(final_prediction)
+            checkpointing.atomic_json_dump(manifest, manifest_path)
+            continue
+        if item.get("status") == "failed":
+            continue
+
+        run_root = drive_root / "artifacts" / "runs" / item["exp_id"] / f"seed{item['seed']}"
+        training_status_path = run_root / "status.json"
+        if not training_status_path.exists() or not (run_root / "best.pt").exists():
+            raise FileNotFoundError(f"Chưa có training artifact hoàn chỉnh: {run_root}")
+        training_status = json.loads(training_status_path.read_text(encoding="utf-8"))
+        if training_status.get("status") != "completed":
+            raise RuntimeError(f"Training chưa completed: {run_root}")
+
+        item["attempts"] = int(item.get("attempts", 0)) + 1
+        item["status"] = "running"
+        item["started_at"] = _now()
+        checkpointing.atomic_json_dump(manifest, manifest_path)
+        executed += 1
+        try:
+            result = final_inference.apply_frozen_spec_once(
+                run_root=run_root,
+                spec_path=item["spec_path"],
+                images_dir=staged["images_dir"],
+                labels_dir=staged["labels_dir"],
+                local_pred_dir=local_pred_dir,
+                persistent_pred_dir=persistent_pred_dir,
+            )
+            item["status"] = "completed"
+            item["completed_at"] = _now()
+            item["prediction"] = result["prediction"]
+            item["result"] = result
+            completed_now.append(result)
+        except Exception as exc:
+            item["last_error"] = repr(exc)
+            item["traceback"] = traceback.format_exc()[-8000:]
+            item["status"] = ("failed" if item["attempts"] >= int(item.get("max_attempts", 3))
+                              else "interrupted")
+            item["failed_at"] = _now()
+            checkpointing.atomic_json_dump(manifest, manifest_path)
+            if stop_on_error:
+                raise
+        checkpointing.atomic_json_dump(manifest, manifest_path)
+    return completed_now

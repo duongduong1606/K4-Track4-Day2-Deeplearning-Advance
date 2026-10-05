@@ -11,11 +11,12 @@ import torch.nn.functional as F
 from torch import nn
 
 try:
-    from . import benchmark, checkpointing, colab_automation, inference, losses, train
+    from . import benchmark, checkpointing, colab_automation, final_inference, inference, losses, train
 except ImportError:
     import benchmark
     import checkpointing
     import colab_automation
+    import final_inference
     import inference
     import losses
     import train
@@ -106,13 +107,27 @@ class TestHelpers(unittest.TestCase):
     def test_manifests_keep_test_locked(self):
         with tempfile.TemporaryDirectory() as directory:
             screening = Path(directory) / "screening.json"
-            final = Path(directory) / "final.json"
+            final_training = Path(directory) / "final_training.json"
+            final = Path(directory) / "final_test.json"
             colab_automation.create_screening_manifest(screening)
             screen_data = __import__("json").loads(screening.read_text(encoding="utf-8"))
             self.assertFalse(screen_data["test_access"])
             self.assertTrue(all(not item["config"].get("save_test_predictions", False)
                                 for item in screen_data["runs"]))
-            colab_automation.create_final_manifest(final, train.Config(exp_id="F01"))
+            colab_automation.create_final_training_manifest(
+                final_training, train.Config(exp_id="F01"), "Chọn bằng validation"
+            )
+            train_data = __import__("json").loads(final_training.read_text(encoding="utf-8"))
+            self.assertFalse(train_data["test_access"])
+            frozen_spec = Path(directory) / "spec.json"
+            spec = final_inference.InferenceSpec(name="I01", views=("identity", "hflip"))
+            checkpointing.atomic_json_dump({
+                "spec": __import__("dataclasses").asdict(spec),
+                "spec_sha256": final_inference.spec_hash(spec),
+                "selected_from": "validation_only",
+                "selection_note": "I01 thắng trên validation",
+            }, frozen_spec)
+            colab_automation.create_final_test_manifest(final, directory, frozen_spec)
             final_data = __import__("json").loads(final.read_text(encoding="utf-8"))
             self.assertTrue(final_data["test_access"])
             self.assertTrue(final_data["locked"])

@@ -58,7 +58,8 @@ MyDrive/DeepWeedsLab/data/labels/{labels,train_subset0,val_subset0,test_subset0}
 - `stage_dataset(...)`: kiểm tra MD5, copy ZIP và giải nén vào `/content` để tránh train trực tiếp trên Drive.
 - `create_screening_manifest(...)`: tạo queue validation-only, không có quyền test.
 - `run_queue(...)`: chạy tuần tự, bỏ qua run hoàn tất và resume `last.pt` sau khi runtime bị ngắt.
-- `create_final_manifest(...)`: tạo queue baseline/final ba seed ở trạng thái khóa.
+- `create_final_training_manifest(...)`: tạo queue train baseline/final ba seed, hoàn toàn không truy cập test.
+- `create_final_test_manifest(...)`: tạo queue test riêng ở trạng thái khóa.
 - `unlock_final_manifest(...)`: mở test bằng một thao tác tường minh kèm ghi chú lựa chọn từ validation.
 
 Mỗi epoch lưu `last.pt` nguyên tử, giữ `best.pt` theo val macro-F1, đồng bộ checkpoint, history và
@@ -71,3 +72,17 @@ lại cùng cell sẽ tự tiếp tục. Final test yêu cầu đồng thời: f
 
 Notebook Colab tự clone repository từ remote `origin`. Vì vậy phải commit và push thư mục `code/`
 trước khi mở notebook trên Colab; nếu không, Colab chỉ thấy phiên bản cũ trên GitHub.
+
+### Luồng final an toàn
+
+1. `final_inference.run_validation_sweep(...)` chạy I00/I01/I02/I03/I04/I07 và latency chỉ trên val.
+2. `final_inference.freeze_inference_spec(...)` đóng băng resolution, views, aggregation và calibration.
+3. `create_final_training_manifest(...)` huấn luyện T00/F01 với 3 seed nhưng không tạo test loader.
+4. `create_final_test_manifest(...)` tạo queue test riêng ở trạng thái khóa.
+5. `unlock_final_manifest(...)` khóa SHA-256 toàn bộ test plan.
+6. `run_final_test_queue(...)` chạy một seed/lần; lưu bản uncal trước, bản final sau, và không ghi đè.
+7. `post_run.assemble_submission(...)` chạy `eval.py score/grade`, tạo workbook, confusion matrix,
+   báo cáo và thư mục bài nộp hoàn chỉnh.
+
+API `create_final_manifest(...)` cũ chủ động báo lỗi và hướng người dùng sang luồng tách
+`final_training` và `final_test`, tránh test bị gọi trong vòng huấn luyện.
