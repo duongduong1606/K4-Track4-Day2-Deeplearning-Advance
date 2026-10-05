@@ -14,7 +14,9 @@ from torchvision.transforms import InterpolationMode
 
 NUM_CLASSES = 9
 EXPECTED_IMAGES = 17_509
-REQUIRED_COLUMNS = {"Filename", "Label", "Species"}
+# Fold split files supplied with the assignment contain only these two fields.
+# Species names live in labels.csv and are metadata, not a training input.
+REQUIRED_COLUMNS = {"Filename", "Label"}
 CLASS_NAMES = [
     "Chinee Apple", "Lantana", "Parkinsonia", "Parthenium", "Prickly Acacia",
     "Rubber Vine", "Siam Weed", "Snake Weed", "Negatives",

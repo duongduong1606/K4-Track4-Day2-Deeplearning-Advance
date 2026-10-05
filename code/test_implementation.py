@@ -6,16 +6,18 @@ import tempfile
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch import nn
 
 try:
-    from . import benchmark, checkpointing, colab_automation, final_inference, inference, losses, train
+    from . import benchmark, checkpointing, colab_automation, dataset, final_inference, inference, losses, train
 except ImportError:
     import benchmark
     import checkpointing
     import colab_automation
+    import dataset
     import final_inference
     import inference
     import losses
@@ -83,6 +85,13 @@ class TestInference(unittest.TestCase):
 
 
 class TestHelpers(unittest.TestCase):
+    def test_split_csv_does_not_require_species_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "train_subset0.csv"
+            pd.DataFrame({"Filename": ["a.jpg"], "Label": [0]}).to_csv(path, index=False)
+            frame = dataset._read_csv(path)
+            self.assertEqual(list(frame.columns), ["Filename", "Label"])
+
     def test_detect_images_dir_supports_nested_and_flat_archives(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
