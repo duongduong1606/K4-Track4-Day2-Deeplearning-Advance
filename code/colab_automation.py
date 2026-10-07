@@ -287,7 +287,7 @@ def _is_persistently_complete(cfg: Config) -> bool:
 
 def run_queue(manifest_path: str | Path, drive_root: str | Path, local_root: str | Path,
               max_runs: int | None = None, allow_test: bool = False,
-              stop_on_error: bool = True) -> list[dict]:
+              stop_on_error: bool = True, retry_failed: bool = False) -> list[dict]:
     """Run or resume pending manifest entries sequentially on one Colab GPU."""
     manifest_path, drive_root, local_root = Path(manifest_path), Path(drive_root), Path(local_root)
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -314,7 +314,11 @@ def run_queue(manifest_path: str | Path, drive_root: str | Path, local_root: str
             item["status"] = "interrupted"
             item["interrupted_at"] = _now()
         if item.get("status") == "failed":
-            continue
+            if not retry_failed:
+                continue
+            item["status"] = "interrupted"
+            item["retried_at"] = _now()
+            checkpointing.atomic_json_dump(manifest, manifest_path)
 
         values = dict(item["config"])
         values.update({

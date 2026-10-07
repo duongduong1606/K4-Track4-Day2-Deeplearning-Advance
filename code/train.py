@@ -436,7 +436,13 @@ def run(cfg: Config) -> dict:
             checkpointing.load_model_state_dict(network, resume_state["model_state_dict"])
             optimizer.load_state_dict(resume_state["optimizer_state_dict"])
             scheduler.load_state_dict(resume_state["scheduler_state_dict"])
-            scaler.load_state_dict(resume_state["scaler_state_dict"])
+            # Older/CPU checkpoints can legitimately contain an empty scaler state.
+            # PyTorch 2.11 raises when that state is loaded into an enabled scaler;
+            # starting with a fresh scale is safe because model/optimizer states are
+            # restored independently.
+            scaler_state = resume_state.get("scaler_state_dict")
+            if scaler.is_enabled() and scaler_state:
+                scaler.load_state_dict(scaler_state)
             if ema is not None and resume_state.get("ema_state_dict") is not None:
                 checkpointing.load_model_state_dict(ema.module, resume_state["ema_state_dict"])
             start_epoch = int(resume_state["epoch"])
