@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import json
+import platform
 import shutil
 import subprocess
 import sys
+from importlib import metadata
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -212,9 +214,22 @@ thêm dưới lệch phân phối và trên phần cứng robot mục tiêu.
 
 
 def _write_submission_readme(path: Path, notebook_url: str) -> None:
+    packages = ("torch", "torchvision", "timm", "numpy", "pandas", "scikit-learn",
+                "Pillow", "matplotlib", "openpyxl", "thop")
+    versions = []
+    for package in packages:
+        try:
+            versions.append(f"- `{package}=={metadata.version(package)}`")
+        except metadata.PackageNotFoundError:
+            versions.append(f"- `{package}`: không có trong môi trường đóng gói")
     path.write_text(f"""# DeepWeeds Lab Day 2 submission
 
 Notebook Colab: {notebook_url}
+
+## Môi trường đã chạy
+
+- `Python {platform.python_version()}`
+{chr(10).join(versions)}
 
 ## Thứ tự tái lập
 
